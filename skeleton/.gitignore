@@ -1,0 +1,29 @@
+# Служебный мусор ОС
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Служебные папки агентов
+.freebuff/
+.claude/
+.cursor/
+
+# Логи установщика
+install-log-*.txt
+
+# Состояние плагина protocol (флаг вкл/выкл — не исходник)
+workflow/PROTOCOL-ON
+
+# Реестр живых сессий плагина protocol (runtime, не исходник)
+workflow/sessions/
+
+# Мягкие захваты задач (runtime, TTL 3 ч, не исходник)
+workflow/claims/
+
+# Детали отдельных задач (создаются по мере надобности)
+workflow/tasks/
+
+# Секреты и локальные настройки
+.env
+.env.local
+*.local.json
