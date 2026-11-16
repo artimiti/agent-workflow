@@ -2,17 +2,19 @@
 /**
  * protocol.test.mjs — тесты движка протокола. Зависимостей нет, нужен только Node.js >= 20.
  *
- *   node --test          (все тесты; ~1 секунда)
- *   node --testprotocol.test.mjs
+ *   node --test                       (все тесты; ~2 секунды)
+ *   node --test workflow/tools/protocol.test.mjs
  *
  * Зачем: состояние проекта — это файлы, и ошибка в движке тихо ломает реестр задач.
  * Поэтому claim/finish/check/prune/context проверяются на КОПИИ проекта во временной папке:
- * рабочие файлы проекта тесты не читают и не меняют.
+ * рабочие файлы проекта тесты не читают и не меняют. Конкурентность проверяется
+ * настоящими процессами (node protocol.mjs claim N), а не имитацией ветки кода.
  */
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -93,6 +95,29 @@ const write = (dir, p, text) => writeFileSync(path.join(dir, p), text)
 const taskRow = (dir, n) => P.parseTasks(read(dir, "workflow/TASKS.md")).find((x) => x.num === n)
 const stateOf = (dir) => JSON.parse(read(dir, "workflow/state.json"))
 const tmpLeft = (dir) => readdirSync(path.join(dir, "workflow")).filter((f) => f.endsWith(".tmp"))
+const lockDir = (dir) => path.join(dir, P.LOCK_PATH)
+
+/* ------------------------------------- настоящие процессы (а не имитация гонки) */
+
+const ENGINE = path.join(path.dirname(fileURLToPath(import.meta.url)), "protocol.mjs")
+
+/** Запуск движка отдельным процессом — ровно то, что делает агент руками. */
+function runProcess(dir, args, env = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [ENGINE, ...args], {
+      cwd: dir,
+      env: { ...process.env, PROTOCOL_ROOT: dir, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let out = ""
+    let err = ""
+    child.stdout.on("data", (d) => (out += d))
+    child.stderr.on("data", (d) => (err += d))
+    child.on("close", (code) => resolve({ code, text: out + err }))
+  })
+}
+
+const claimProcess = (dir, n, owner, env) => runProcess(dir, ["claim", String(n), "--as", owner], env)
 
 /* ------------------------------------------------------------------ разбор */
 
@@ -169,10 +194,10 @@ test("claim --force: перехват чужого захвата", (t) => {
   assert.equal(JSON.parse(read(dir, "workflow/claims/1.json")).owner, "bob")
 })
 
-test("claim: гонка — чужой захват появился, пока читали (файл уже есть)", (t) => {
+test("claim: просроченный захват в файле — перезапись без ошибок", (t) => {
   const dir = fixture(t)
   mkdirSync(path.join(dir, "workflow/claims"), { recursive: true })
-  // Захват без TTL (просроченный): файл существует, но задача считается свободной.
+  // Захват просрочен: файл существует, но задача считается свободной.
   write(
     dir,
     "workflow/claims/1.json",
@@ -184,7 +209,7 @@ test("claim: гонка — чужой захват появился, пока �
   assert.equal(taskRow(dir, 1).statusWord, "В РАБОТЕ")
 })
 
-test("claim: гонка — второй успел первым, TASKS не переписан", (t) => {
+test("claim: активный чужой захват в файле — отказ, TASKS не переписан", (t) => {
   const dir = fixture(t)
   mkdirSync(path.join(dir, "workflow/claims"), { recursive: true })
   const future = new Date(Date.now() + P.CLAIM_TTL_MS).toISOString()
@@ -197,6 +222,67 @@ test("claim: гонка — второй успел первым, TASKS не п�
   assert.equal(res.code, 2, res.text)
   assert.match(res.text, /уже занята: «bob»/)
   assert.equal(taskRow(dir, 1).statusWord, "СВОБОДНА", "TASKS не должен врать про второго")
+})
+
+/* ------------------------------------------- конкурентность настоящими процессами */
+
+test("claim: три процесса одновременно — задачу получает ровно один", async (t) => {
+  const dir = fixture(t)
+  const results = await Promise.all([0, 1, 2].map((i) => claimProcess(dir, 1, "bot" + i)))
+  const winners = results.filter((r) => r.code === 0)
+  assert.equal(
+    winners.length,
+    1,
+    "победителей должно быть ровно 1:\n" + results.map((r) => `exit ${r.code}: ${r.text.trim().split("\n")[0]}`).join("\n"),
+  )
+  const other = results.filter((r) => r.code !== 0)
+  for (const r of other) assert.match(r.text, /уже занята: «bot\d»/)
+  const claim = JSON.parse(read(dir, "workflow/claims/1.json"))
+  assert.match(claim.owner, /^bot\d$/, "владелец — один из участников")
+  assert.equal(taskRow(dir, 1).statusWord, "В РАБОТЕ")
+  assert.deepEqual(tmpLeft(dir), [], "временных файлов быть не должно")
+  assert.equal(existsSync(lockDir(dir)), false, "блокировка должна сниматься")
+})
+
+test("claim: просроченный захват + три процесса — перехватывает ровно один", async (t) => {
+  const dir = fixture(t)
+  mkdirSync(path.join(dir, "workflow/claims"), { recursive: true })
+  write(
+    dir,
+    "workflow/claims/1.json",
+    JSON.stringify({ task: 1, owner: "ghost", takenAt: "2026-11-16T10:00:00+03:00", expiresAt: "2026-11-16T11:00:00+03:00" }) + "\n",
+  )
+  const results = await Promise.all([0, 1, 2].map((i) => claimProcess(dir, 1, "bot" + i)))
+  assert.equal(
+    results.filter((r) => r.code === 0).length,
+    1,
+    results.map((r) => `exit ${r.code}: ${r.text.trim().split("\n")[0]}`).join("\n"),
+  )
+  const claim = JSON.parse(read(dir, "workflow/claims/1.json"))
+  assert.match(claim.owner, /^bot\d$/, "брошенный захват «ghost» не должен остаться")
+  assert.equal(taskRow(dir, 1).statusWord, "В РАБОТЕ")
+})
+
+test("lock: брошенная блокировка от умершего процесса снимается по возрасту", async (t) => {
+  const dir = fixture(t)
+  mkdirSync(lockDir(dir), { recursive: true })
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(lockDir(dir), old, old) // процесс оставил блокировку минуту назад и умер
+  const res = await claimProcess(dir, 1, "art", { PROTOCOL_LOCK_WAIT_MS: "1000" })
+  assert.equal(res.code, 0, res.text)
+  assert.equal(JSON.parse(read(dir, "workflow/claims/1.json")).owner, "art")
+  assert.equal(existsSync(lockDir(dir)), false, "после команды блокировки быть не должно")
+})
+
+test("lock: живая блокировка — команда ждёт и честно сообщает, что не дождалась", async (t) => {
+  const dir = fixture(t)
+  mkdirSync(lockDir(dir), { recursive: true }) // кто-то сейчас работает
+  const res = await claimProcess(dir, 1, "art", { PROTOCOL_LOCK_WAIT_MS: "100" })
+  assert.equal(res.code, 1, res.text)
+  assert.match(res.text, /не дождался блокировки/)
+  assert.equal(existsSync(path.join(dir, "workflow/claims/1.json")), false, "захват не должен появиться")
+  assert.equal(existsSync(lockDir(dir)), true, "чужую блокировку снимать нельзя")
+  assert.equal(taskRow(dir, 1).statusWord, "СВОБОДНА", "TASKS не должен меняться")
 })
 
 test("claim: готовую задачу взять нельзя", (t) => {
@@ -250,7 +336,7 @@ test("finish: несуществующая задача — понятная о�
 
 /* ------------------------------------------- аварийные сценарии (это и есть «доказательство») */
 
-test("check ловит смерть на середине finish: задача закрыта, state не обновлён", (t) => {
+test("check ловит последствия сбоя посреди finish: задача закрыта, state не обновлён", (t) => {
   const dir = fixture(t)
   write(
     dir,

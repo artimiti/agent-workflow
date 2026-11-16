@@ -20,6 +20,9 @@ workflow/sessions/
 # Мягкие захваты задач (runtime, TTL 3 ч, не исходник)
 workflow/claims/
 
+# Межпроцессная блокировка команд протокола (runtime, живёт миллисекунды)
+workflow/.protocol.lock/
+
 # Детали отдельных задач (создаются по мере надобности)
 workflow/tasks/
 

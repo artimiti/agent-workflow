@@ -27,15 +27,16 @@
  *   help                 — эта справка
  *
  * Переменные окружения: PROTOCOL_ROOT (корень проекта; по умолчанию cwd),
- * PROTOCOL_OWNER (кто взял задачу), PROTOCOL_TOOL (имя агента для журнала захвата).
+ * PROTOCOL_OWNER (кто взял задачу), PROTOCOL_TOOL (имя агента для журнала захвата),
+ * PROTOCOL_LOCK_WAIT_MS (сколько ждать блокировку; по умолчанию 5000, нужно тестам).
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
 /** Версия движка. Печатается в `check` — чтобы было видно, отстаёт ли проект от шаблона. */
-export const ENGINE_VERSION = "1.0.0"
+export const ENGINE_VERSION = "1.1.0"
 
 export const CLAIM_TTL_MS = 3 * 60 * 60 * 1000 // 3 часа БЕЗ АКТИВНОСТИ (не «3 часа на задачу»)
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000
@@ -51,6 +52,19 @@ export const BUDGET = {
 }
 export const PRUNE_DAYS = 14 // закрытые задачи старше — в архив
 export const PRUNE_KEEP = 10 // но последние N закрытых остаются всегда
+
+/**
+ * Межпроцессная блокировка на изменяющие команды (claim/release/finish/prune).
+ * Каталог вместо файла: mkdir атомарен и в Windows, и в POSIX — либо создали мы,
+ * либо он уже есть. Никаких зависимостей и отдельных демонов.
+ */
+export const LOCK_PATH = "workflow/.protocol.lock"
+export const LOCK_TTL_MS = 10_000 // дольше 10 с команда не живёт: значит процесс умер
+export const LOCK_STEP_MS = 25 // пауза между попытками
+const lockWaitMs = () => {
+  const v = Number(process.env.PROTOCOL_LOCK_WAIT_MS)
+  return Number.isFinite(v) && v >= 0 ? v : 5000
+}
 
 const LOG_HEAD_ENTRIES = 3
 const STATUS_WORDS = ["СВОБОДНА", "В РАБОТЕ", "ПЕРЕХВАЧЕНА", "ГОТОВА"]
@@ -119,6 +133,61 @@ function writeJsonNew(p, data) {
   } catch (err) {
     if (err.code === "EEXIST") return false
     throw err
+  }
+}
+
+/** Сон без зависимостей: Atomics.wait ждёт в ядре, не занимая CPU и не требуя таймеров. */
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+/**
+ * Выполнить изменяющую команду под межпроцессной блокировкой.
+ * Блокировка — каталог workflow/.protocol.lock: `mkdir` атомарен и в Windows, и в POSIX,
+ * поэтому из двух одновременных команд внутрь входит ровно одна.
+ * Брошенную блокировку (процесс убили) снимаем по возрасту: mtime старше LOCK_TTL_MS.
+ */
+function withLock(root, fn) {
+  const lockDir = path.join(root, LOCK_PATH)
+  mkdirSync(path.dirname(lockDir), { recursive: true })
+  const wait = lockWaitMs()
+  const deadline = Date.now() + wait
+  for (;;) {
+    try {
+      mkdirSync(lockDir)
+      break
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err
+    }
+    let mtime = 0
+    try {
+      mtime = statSync(lockDir).mtimeMs
+    } catch {
+      continue // каталог успели снять — пробуем снова
+    }
+    if (Date.now() - mtime > LOCK_TTL_MS) {
+      // Процесс умер, не сняв блокировку: убираем и заходим.
+      try {
+        rmSync(lockDir, { recursive: true, force: true })
+      } catch {
+        // уже сняли — не мешает
+      }
+      continue
+    }
+    if (Date.now() >= deadline) {
+      throw new ProtocolError(
+        `не дождался блокировки ${LOCK_PATH}: другая команда протокола ещё работает ` +
+          `(ждал ${wait} мс).\nПовтори команду через пару секунд.`,
+      )
+    }
+    sleepMs(LOCK_STEP_MS)
+  }
+  try {
+    return fn()
+  } finally {
+    try {
+      rmSync(lockDir, { recursive: true, force: true })
+    } catch {
+      // уборка не должна подменять результат команды
+    }
   }
 }
 
@@ -476,6 +545,10 @@ function cmdStep(root, arg) {
 
 function cmdClaim(root, n, opts) {
   if (!Number.isInteger(n)) throw new ProtocolError("укажите номер задачи: protocol claim 7")
+  return withLock(root, () => claimLocked(root, n, opts))
+}
+
+function claimLocked(root, n, opts) {
   const md = readText(rel(root, "workflow/TASKS.md"))
   const task = parseTasks(md).find((t) => t.num === n)
   if (!task) {
@@ -536,17 +609,23 @@ function cmdClaim(root, n, opts) {
 
 function cmdRelease(root, n) {
   if (!Number.isInteger(n)) throw new ProtocolError("укажите номер задачи: protocol release 7")
-  const p = rel(root, `workflow/claims/${n}.json`)
-  const existed = existsSync(p)
-  if (existed) unlinkSync(p)
-  const md = readText(rel(root, "workflow/TASKS.md"))
-  const task = parseTasks(md).find((t) => t.num === n)
-  if (task && task.statusWord === "В РАБОТЕ") saveTasks(root, md, task, `СВОБОДНА (освобождена ${today()})`)
-  return `Задача №${n}: захват ${existed ? "снят" : "отсутствовал"}${task && task.statusWord === "В РАБОТЕ" ? ", статус → СВОБОДНА" : ""}.`
+  return withLock(root, () => {
+    const p = rel(root, `workflow/claims/${n}.json`)
+    const existed = existsSync(p)
+    if (existed) unlinkSync(p)
+    const md = readText(rel(root, "workflow/TASKS.md"))
+    const task = parseTasks(md).find((t) => t.num === n)
+    if (task && task.statusWord === "В РАБОТЕ") saveTasks(root, md, task, `СВОБОДНА (освобождена ${today()})`)
+    return `Задача №${n}: захват ${existed ? "снят" : "отсутствовал"}${task && task.statusWord === "В РАБОТЕ" ? ", статус → СВОБОДНА" : ""}.`
+  })
 }
 
 function cmdFinish(root, n) {
   if (!Number.isInteger(n)) throw new ProtocolError("укажите номер задачи: protocol finish 7")
+  return withLock(root, () => finishLocked(root, n))
+}
+
+function finishLocked(root, n) {
   const md = readText(rel(root, "workflow/TASKS.md"))
   const task = parseTasks(md).find((t) => t.num === n)
   if (!task) {
@@ -621,6 +700,10 @@ function cmdFinish(root, n) {
 }
 
 function cmdPrune(root, opts = {}) {
+  return withLock(root, () => pruneLocked(root, opts))
+}
+
+function pruneLocked(root, opts) {
   const md = readText(rel(root, "workflow/TASKS.md"))
   if (!md) throw new ProtocolError("workflow/TASKS.md не найден")
   const crlf = md.includes("\r\n")
@@ -928,7 +1011,7 @@ export const HELP = `protocol — единый ответ о состоянии 
   node workflow/tools/protocol.mjs prune [--dry]       закрытые >14 дн. → workflow/TASKS-archive.md (последние 10 остаются)
   node workflow/tools/protocol.mjs context [--write]   компактный бриф (--write → workflow/CONTEXT.md)
   node workflow/tools/protocol.mjs sessions            живые сессии OpenCode
-  node --test                          тесты движка (21 проверка, без зависимостей)
+  node --test                          тесты движка (25 проверок, без зависимостей)
 
 Флаги: --force (перехватить чужой активный захват), --as <имя> (кто взял),
        --write (записать workflow/CONTEXT.md), --dry (предпросмотр prune),

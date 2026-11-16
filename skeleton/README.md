@@ -38,10 +38,15 @@ node workflow/tools/protocol.mjs open      # что не доделано
 node workflow/tools/protocol.mjs claim 1   # взять задачу
 node workflow/tools/protocol.mjs finish 1  # закрыть задачу
 node workflow/tools/protocol.mjs check     # сверка файлов протокола
-node --test                # тесты движка (21 проверка)
+node --test                # тесты движка (25 проверок)
 ```
 
 4. Закончил работу — запись в `workflow/LOG.md` сверху, обновить `workflow/STATUS.md`, коммит.
+
+`claim`/`release`/`finish`/`prune` работают под блокировкой `workflow/.protocol.lock`
+(каталог, атомарный `mkdir`): два чата, взявших одну задачу одновременно, не перетирают
+друг друга — один получает задачу, второй понятный отказ. Брошенную блокировку
+(процесс убили) движок снимает сам через 10 секунд.
 
 ## С чего начать
 

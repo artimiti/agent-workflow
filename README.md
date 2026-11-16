@@ -91,7 +91,10 @@ workflow/
 2. Первый чат агент начнёт с чек-ина: `(protocol✔) STATUS прочитан — …`
 3. `node workflow/tools/protocol.mjs next` — что делать сейчас.
 4. `node workflow/tools/protocol.mjs claim 1` / `finish 1` — взять и закрыть задачу.
-5. `node --test` — 21 проверка движка за секунду (claim, finish, check, prune, аварийные сценарии).
+5. `node --test` — 25 проверок движка за секунду (claim, finish, check, prune, аварийные сценарии и настоящая конкуренция).
+6. Изменяющие команды (`claim`, `release`, `finish`, `prune`) ходят под блокировкой
+   `workflow/.protocol.lock` — из двух одновременных чатов победит один, второй получит
+   понятный отказ.
 
 ## 5. Структура репозитория-раздатчика
 
