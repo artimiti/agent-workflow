@@ -94,7 +94,9 @@
 - `finish N` — закрыть задачу (TASKS → «ГОТОВА», шаг плана → done);
 - `check` — сверка `state.json` ↔ TASKS ↔ LOG + бюджет файлов;
 - `prune [--dry]` — закрытые задачи старше 14 дней → `workflow/TASKS-archive.md`;
-- `context --write` — пересобрать `CONTEXT.md` (≤ 4 КБ).
+- `context --write` — пересобрать `CONTEXT.md` (≤ 4 КБ);
+- `node --test` — тесты самого движка (21 проверка, ~1 с): если правил
+  `protocol.mjs`, прогони их до отчёта — «работает» подтверждается тестом, а не словами.
 
 Нет shell — прочитай `workflow/CONTEXT.md` (генерируется той же командой).
 Источник «что дальше» — **`workflow/state.json`**, а не STATUS и не память.

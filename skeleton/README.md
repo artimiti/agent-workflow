@@ -22,6 +22,7 @@ workflow/                     рабочие файлы протокола
   CONTEXT.md                  краткий бриф для нового чата (генерируется)
   state.json                  машиночитаемое состояние: этап, шаги планов, «что дальше»
   tools/protocol.mjs          CLI протокола
+  tools/protocol.test.mjs     тесты движка (node --test)
 .opencode/plugins/protocol/   плагин OpenCode: контекст чата + напоминания + гвард
 ```
 
@@ -37,6 +38,7 @@ node workflow/tools/protocol.mjs open      # что не доделано
 node workflow/tools/protocol.mjs claim 1   # взять задачу
 node workflow/tools/protocol.mjs finish 1  # закрыть задачу
 node workflow/tools/protocol.mjs check     # сверка файлов протокола
+node --test                # тесты движка (21 проверка)
 ```
 
 4. Закончил работу — запись в `workflow/LOG.md` сверху, обновить `workflow/STATUS.md`, коммит.

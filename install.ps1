@@ -257,7 +257,7 @@ function Show-Plan {
   Write-Log '  1. создать папку и скопировать шаблон (AGENTS.md, README.md, project/, workflow/, .opencode/)'
   Write-Log '  2. подставить имя проекта и дату, собрать CONTEXT.md'
   Write-Log '  3. git init + первый коммит «шаблон агентской системы»'
-  Write-Log '  4. самопроверка: protocol check (расхождений быть не должно)'
+  Write-Log '  4. самопроверка: protocol check + тесты движка (node --test)'
   Write-Log '  5. отчёт: что дальше'
   Write-Log ''
 }
@@ -360,6 +360,14 @@ function Invoke-SelfCheck {
     if ($code -ne 0) { Write-Log '  внимание: protocol check нашёл расхождения (см. выше)' 'Yellow'; return $false }
 
     Write-Log '  готово: protocol check — расхождений нет' 'Green'
+
+    # Тесты движка: доказательство, что claim/finish/check работают, а не только «написано».
+    $tests = & $NodeExe '--test' '--test-reporter=tap' 'workflow/tools/protocol.test.mjs' 2>&1 | Out-String
+    $testsCode = $LASTEXITCODE
+    $pass = if ($tests -match '# pass (\d+)') { $Matches[1] } else { '?' }
+    $fail = if ($tests -match '# fail (\d+)') { $Matches[1] } else { '?' }
+    if ($testsCode -ne 0) { Write-Log "  внимание: тесты движка не прошли (pass $pass, fail $fail)" 'Yellow'; return $false }
+    Write-Log "  готово: тесты движка — pass $pass, fail 0" 'Green'
     return $true
   }
   finally { Pop-Location }
@@ -378,6 +386,7 @@ function Show-Report {
   Write-Log '   2. первый чат агент начнёт с чек-ина: «(protocol✔) STATUS прочитан…»'
   Write-Log '   3. спросить состояние:  node workflow/tools/protocol.mjs next'
   Write-Log '   4. первая задача:       node workflow/tools/protocol.mjs claim 1'
+  Write-Log '   5. тесты движка:        node --test'
   if (-not $Checked) { Write-Log '  (протокол не проверен: нет Node.js >= 20 — поставьте и запустите check вручную)' 'Yellow' }
   if (-not $HasGit) { Write-Log '  (git нет: истории коммитов тоже нет — поставьте Git и выполните git init в папке проекта)' 'Yellow' }
 }
@@ -431,10 +440,9 @@ try {
   if ($From -le 2) {
     Write-Log '[2/4] имя проекта, даты, CONTEXT…' 'Cyan'
     Set-Placeholders -Target $Target -ProjectName $ProjectName
-    if ($From -gt 1) {
-      Push-Location -LiteralPath $Target
-      try { if ($nodeExe) { & $nodeExe 'workflow/tools/protocol.mjs' context --write | Out-Null } } finally { Pop-Location }
-    }
+    # CONTEXT.md собираем ДО git-коммита, иначе первый коммит оставляет «грязное» рабочее дерево.
+    Push-Location -LiteralPath $Target
+    try { if ($nodeExe) { & $nodeExe 'workflow/tools/protocol.mjs' context --write | Out-Null } } finally { Pop-Location }
   }
   if ($From -le 3) {
     Write-Log '[3/4] git init + первый коммит…' 'Cyan'
@@ -442,7 +450,7 @@ try {
     else { Write-Log '  пропущено по команде пользователя' 'Yellow' }
   }
   if ($From -le 4) {
-    Write-Log '[4/4] самопроверка протокола…' 'Cyan'
+    Write-Log '[4/4] самопроверка: check + тесты движка…' 'Cyan'
     $checked = Invoke-SelfCheck -Target $Target -NodeExe $nodeExe
   }
 }

@@ -40,7 +40,7 @@ cd agent-workflow
    [git-scm.com](https://git-scm.com/download/win);
 2. копирование шаблона, подстановка имени проекта и даты;
 3. `git init` + первый коммит «шаблон агентской системы»;
-4. самопроверка `protocol check` и сборка `CONTEXT.md`;
+4. самопроверка: `protocol check`, тесты движка (`node --test`) и сборка `CONTEXT.md`;
 5. отчёт: что где лежит и что делать дальше.
 
 ### Режимы
@@ -78,7 +78,7 @@ workflow/
   STATUS.md  TASKS.md  LOG.md  TASKS-archive.md
   CONTEXT.md                  собирается при установке
   state.json                  этап, шаги планов, «что дальше»
-  tools/protocol.mjs          CLI протокола
+  tools/protocol.mjs          CLI протокола (+ protocol.test.mjs — тесты движка)
 .opencode/plugins/protocol/   плагин: контекст чата, напоминания, гвард команд
 ```
 
@@ -91,6 +91,7 @@ workflow/
 2. Первый чат агент начнёт с чек-ина: `(protocol✔) STATUS прочитан — …`
 3. `node workflow/tools/protocol.mjs next` — что делать сейчас.
 4. `node workflow/tools/protocol.mjs claim 1` / `finish 1` — взять и закрыть задачу.
+5. `node --test` — 21 проверка движка за секунду (claim, finish, check, prune, аварийные сценарии).
 
 ## 5. Структура репозитория-раздатчика
 

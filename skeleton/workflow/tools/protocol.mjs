@@ -30,9 +30,12 @@
  * PROTOCOL_OWNER (кто взял задачу), PROTOCOL_TOOL (имя агента для журнала захвата).
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
+
+/** Версия движка. Печатается в `check` — чтобы было видно, отстаёт ли проект от шаблона. */
+export const ENGINE_VERSION = "1.0.0"
 
 export const CLAIM_TTL_MS = 3 * 60 * 60 * 1000 // 3 часа БЕЗ АКТИВНОСТИ (не «3 часа на задачу»)
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000
@@ -83,13 +86,40 @@ function readJson(p) {
   }
 }
 
+/**
+ * Запись через временный файл + переименование: файл протокола либо старый, либо новый —
+ * недописанного состояния не бывает, даже если процесс убьют посреди записи.
+ */
 function writeText(p, text) {
   mkdirSync(path.dirname(p), { recursive: true })
-  writeFileSync(p, text, "utf8")
+  const tmp = `${p}.${process.pid}.${Date.now().toString(36)}.tmp`
+  try {
+    writeFileSync(tmp, text, "utf8")
+    renameSync(tmp, p)
+  } catch (err) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // временного файла может и не быть — не мешает основной ошибке
+    }
+    throw err
+  }
 }
 
 function writeJson(p, data) {
   writeText(p, JSON.stringify(data, null, 2) + "\n")
+}
+
+/** Атомарно СОЗДАЁТ файл: true — создали мы, false — он уже был (кто-то успел раньше). */
+function writeJsonNew(p, data) {
+  mkdirSync(path.dirname(p), { recursive: true })
+  try {
+    writeFileSync(p, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", flag: "wx" })
+    return true
+  } catch (err) {
+    if (err.code === "EEXIST") return false
+    throw err
+  }
 }
 
 const pad = (n) => String(n).padStart(2, "0")
@@ -461,18 +491,17 @@ function cmdClaim(root, n, opts) {
   const prev = readJson(claimPath)
   const now = Date.now()
   const prevActive = prev && Date.parse(prev.expiresAt) > now
-  if (prevActive && prev.owner !== owner && !opts.force) {
-    return {
-      code: 2,
-      text: [
-        `Задача №${n} уже занята: «${prev.owner}»${prev.session ? " (сессия " + prev.session + ")" : ""}.`,
-        `Взята ${fmtClock(prev.takenAt)}, истекает ${fmtClock(prev.expiresAt)}.`,
-        "Не перехватывай вслепую — спроси пользователя.",
-        `Если он разрешил: node workflow/tools/protocol.mjs claim ${n} --force`,
-      ].join("\n"),
-    }
-  }
-  writeJson(claimPath, {
+  const busyText = (info) =>
+    [
+      `Задача №${n} уже занята: «${info.owner}»${info.session ? " (сессия " + info.session + ")" : ""}.`,
+      `Взята ${fmtClock(info.takenAt)}, истекает ${fmtClock(info.expiresAt)}.`,
+      "Не перехватывай вслепую — спроси пользователя.",
+      `Если он разрешил: node workflow/tools/protocol.mjs claim ${n} --force`,
+    ].join("\n")
+
+  if (prevActive && prev.owner !== owner && !opts.force) return { code: 2, text: busyText(prev) }
+
+  const claim = {
     task: n,
     owner,
     tool,
@@ -480,7 +509,17 @@ function cmdClaim(root, n, opts) {
     takenAt: prevActive && prev.takenAt ? prev.takenAt : nowIso(),
     heartbeatAt: nowIso(),
     expiresAt: nowIso(new Date(now + CLAIM_TTL_MS)),
-  })
+  }
+  if (prevActive) {
+    writeJson(claimPath, claim) // продление своего захвата или --force
+  } else if (!writeJsonNew(claimPath, claim)) {
+    // Пока читали — захват успел создать другой чат: файл создаётся атомарно («wx»), победитель один.
+    const rival = readJson(claimPath)
+    if (rival && Date.parse(rival.expiresAt) > Date.now() && rival.owner !== owner && !opts.force) {
+      return { code: 2, text: busyText(rival) }
+    }
+    writeJson(claimPath, claim)
+  }
   if (task.statusWord !== "В РАБОТЕ") {
     saveTasks(root, md, task, `В РАБОТЕ (${today()}, ${owner})`)
   }
@@ -762,6 +801,7 @@ function cmdCheck(root) {
   const fresh = dateDrift.length === 0 ? "fresh" : "stale"
   const lines = [
     "ПРОВЕРКА ПРОТОКОЛА",
+    `движок: v${ENGINE_VERSION} (workflow/tools/protocol.mjs)`,
     `state.json: ${state.updated ? "обновлён " + fmtClock(state.updated) : "нет поля updated"}`,
     `задачи: ${tasks.length} строк, открытых ${open.length}`,
     `шаги планов: ${stepsDone}/${stepsTotal} закрыто (${Object.keys(state.plans || {}).length} план(ов))`,
@@ -888,6 +928,7 @@ export const HELP = `protocol — единый ответ о состоянии 
   node workflow/tools/protocol.mjs prune [--dry]       закрытые >14 дн. → workflow/TASKS-archive.md (последние 10 остаются)
   node workflow/tools/protocol.mjs context [--write]   компактный бриф (--write → workflow/CONTEXT.md)
   node workflow/tools/protocol.mjs sessions            живые сессии OpenCode
+  node --test                          тесты движка (21 проверка, без зависимостей)
 
 Флаги: --force (перехватить чужой активный захват), --as <имя> (кто взял),
        --write (записать workflow/CONTEXT.md), --dry (предпросмотр prune),
