@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Установка каркаса agent-workflow в новую папку проекта.
+  Установка шаблона agent-workflow в новую папку проекта.
 
 .DESCRIPTION
   Проверяет зависимости (Node.js, Git), при согласии ставит недостающие через winget,
@@ -224,7 +224,7 @@ function Invoke-Doctor {
   $rows += [pscustomobject]@{ ok = [bool]$winget; Проверка = 'winget (ставит недостающее)'; Итог = $(if ($winget) { "ok: $winget" } else { 'нет — зависимости ставьте вручную (nodejs.org, git-scm.com)' }) }
   $rows += [pscustomobject]@{ ok = $true; Проверка = 'OpenCode (не обязателен)'; Итог = $(if ($oc) { "ok: $($oc.Source)" } else { 'нет в PATH — папку можно открыть позже' }) }
   $skeletonOk = Test-Path -LiteralPath (Join-Path $Skeleton 'AGENTS.md')
-  $rows += [pscustomobject]@{ ok = $skeletonOk; Проверка = 'Каркас (skeleton/)'; Итог = $(if ($skeletonOk) { 'ok' } else { 'НЕТ: рядом с install.ps1 должна лежать папка skeleton/' }) }
+  $rows += [pscustomobject]@{ ok = $skeletonOk; Проверка = 'Шаблон (skeleton/)'; Итог = $(if ($skeletonOk) { 'ok' } else { 'НЕТ: рядом с install.ps1 должна лежать папка skeleton/' }) }
 
   if ($Path) {
     $t = Test-TargetFolder $Path
@@ -251,12 +251,12 @@ function Show-Plan {
   Write-Log 'ПЛАН УСТАНОВКИ' 'Cyan'
   Write-Log "  куда:        $Target"
   Write-Log "  имя проекта: $ProjectName"
-  Write-Log "  каркас:      $Skeleton"
+  Write-Log "  шаблон:      $Skeleton"
   Write-Log ''
   Write-Log '  0. проверить зависимости (Node.js, Git); недостающие — поставить по согласию'
-  Write-Log '  1. создать папку и скопировать каркас (AGENTS.md, README.md, project/, workflow/, .opencode/)'
+  Write-Log '  1. создать папку и скопировать шаблон (AGENTS.md, README.md, project/, workflow/, .opencode/)'
   Write-Log '  2. подставить имя проекта и дату, собрать CONTEXT.md'
-  Write-Log '  3. git init + первый коммит «каркас агентской системы»'
+  Write-Log '  3. git init + первый коммит «шаблон агентской системы»'
   Write-Log '  4. самопроверка: protocol check (расхождений быть не должно)'
   Write-Log '  5. отчёт: что дальше'
   Write-Log ''
@@ -332,7 +332,7 @@ function Initialize-Git {
 
     $gitArgs = @()
     if ($ident.Count) { $gitArgs += $ident }
-    $gitArgs += @('commit', '-q', '-m', 'каркас агентской системы: правила, протокол, плагин')
+    $gitArgs += @('commit', '-q', '-m', 'шаблон агентской системы: правила, протокол, плагин')
     & $GitExe @gitArgs 2>&1 | Out-String | Write-Host
 
     $status = (& $GitExe status --porcelain) 2>$null
@@ -427,7 +427,7 @@ if ($nodeExe) {
 
 $checked = $false
 try {
-  if ($From -le 1) { Write-Log ''; Write-Log '[1/4] копирование каркаса…' 'Cyan'; Copy-Skeleton -Target $Target }
+  if ($From -le 1) { Write-Log ''; Write-Log '[1/4] копирование шаблона…' 'Cyan'; Copy-Skeleton -Target $Target }
   if ($From -le 2) {
     Write-Log '[2/4] имя проекта, даты, CONTEXT…' 'Cyan'
     Set-Placeholders -Target $Target -ProjectName $ProjectName
