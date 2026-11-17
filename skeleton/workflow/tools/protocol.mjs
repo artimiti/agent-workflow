@@ -36,7 +36,7 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 
 /** Версия движка. Печатается в `check` — чтобы было видно, отстаёт ли проект от шаблона. */
-export const ENGINE_VERSION = "1.1.0"
+export const ENGINE_VERSION = "0.1.0"
 
 export const CLAIM_TTL_MS = 3 * 60 * 60 * 1000 // 3 часа БЕЗ АКТИВНОСТИ (не «3 часа на задачу»)
 export const SESSION_TTL_MS = 24 * 60 * 60 * 1000
